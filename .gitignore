@@ -1,0 +1,25 @@
+# Built packages
+*.rmskin
+build/
+dist/
+
+# Never commit credentials or cached usage data. The widget reads tokens from
+# %USERPROFILE%\.claude and %USERPROFILE%\.codex and writes its cache to
+# %APPDATA%\ClaudeUsage — none of that belongs in this tree, but these patterns
+# guard against a stray copy being dropped here while debugging.
+usage.json
+.credentials.json
+auth.json
+*credentials*.json
+*oauth*.json
+*.token
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*~
+*.swp
