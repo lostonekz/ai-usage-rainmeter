@@ -2,9 +2,7 @@
 
 A Rainmeter widget showing **Claude** and **Codex / ChatGPT** usage limits side by side on your desktop.
 
-![Preview](Skins/ClaudeUsage/preview.png)
-
-> The preview image is from the original 1.0.0 release and shows the older single-provider layout.
+<img src="Skins/ClaudeUsage/preview.png" alt="Preview" width="330">
 
 ---
 
