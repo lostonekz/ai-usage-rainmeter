@@ -129,6 +129,34 @@ The Anthropic usage response carries no plan name. The badge is read from `rateL
 
 ---
 
+## Why no Gemini?
+
+Asked often enough to be worth writing down. As of October 2026 there is no supported
+way to read Gemini usage for a personal account:
+
+- **Gemini CLI OAuth** is refused outright. Signing in returns *"This client is no longer
+  supported for Gemini Code Assist for individuals. To continue using Gemini, please
+  migrate to the Antigravity suite of products."* This covers individual, AI Pro and Ultra
+  accounts — **Google AI Pro is a consumer plan and is included in the cutoff**. Gemini Code
+  Assist Standard/Enterprise, a separate Google Cloud product, is reportedly still served.
+- **A Gemini API key** authenticates against `generativelanguage.googleapis.com`, which has
+  no quota endpoint. API-key usage is tracked through Cloud billing/monitoring, needing a
+  GCP project and service account.
+- **Antigravity** holds the only readable numbers, via an undocumented local RPC —
+  `POST /exa.language_server_pb.LanguageServerService/GetUserStatus` on its language
+  server's loopback port, authenticated with a CSRF token from the process command line.
+  Even if wired up, it works only while the IDE is running, exposes only the 5-hour window
+  (not the weekly limit), and regenerates its port and token every launch.
+
+That last option was deliberately not implemented: it is strictly worse than the other two
+providers, which read persistent token files and work whether or not any app is open. If
+you want Gemini numbers today, an IDE extension such as
+[Henrik-3/AntigravityQuota](https://github.com/Henrik-3/AntigravityQuota) is the better
+tool for the job.
+
+The provider structure here is per-section, so adding Gemini later is a fetch function, a
+regex and a third section — whenever Google ships something supported.
+
 ## Privacy
 
 - Tokens are read from your own local files and sent only to the provider they belong to — Anthropic's token to Anthropic, the ChatGPT token to OpenAI. Nowhere else.
