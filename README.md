@@ -97,7 +97,8 @@ Common cases:
 | `Codex: expired` | The ChatGPT token in `auth.json` has lapsed. Run Codex once; it refreshes the token itself. |
 | `Codex: forbidden` | The usage endpoint refused the request. It is undocumented — it may have moved. |
 | `Claude: Rate limited` | Too many calls to the usage API. It clears on its own; raise `RefreshInterval` if it recurs. |
-| `Claude: OAuth token has expired` | Run `claude` in a terminal and sign in again. |
+| `Claude: Token refresh throttled` | The token endpoint turned the renewal away. The next cycle retries; nothing to do. |
+| `Claude: Token refresh failed` | The refresh token itself is dead (28 days unused, or spent elsewhere). Sign in again: `claude auth login` - `claude.cmd auth login` on a PowerShell that blocks the `.ps1` shim. |
 | Everything blank, no error | Rainmeter could not run the script. Check Rainmeter's log: tray icon → **About → Log**. |
 
 ---
@@ -160,7 +161,8 @@ regex and a third section — whenever Google ships something supported.
 - Tokens are read from your own local files and sent only to the provider they belong to — Anthropic's token to Anthropic, the ChatGPT token to OpenAI. Nowhere else.
 - `usage.json` holds only percentages, reset timestamps, plan tier and status text. No tokens, account IDs or email addresses are written to it.
 - Nothing is sent anywhere else, and the widget only reads usage data — it cannot change either account.
-- The script never refreshes or rewrites either token file. It reads them, and reports when a token has expired. Refreshing is left to Claude Code and Codex so this widget cannot corrupt a working login.
+- The Codex token file is only ever read. The Claude one is rewritten, but only to renew it: see below.
+- Renewing the Claude token is the one write this widget makes, and it exists because not writing it was worse. The access token lasts 8 hours and only the standalone CLI rewrites the file - the desktop app renews inside its own session - so the file goes stale while the account is perfectly logged in, and the widget used to answer that with "sign in again". Worse, the server **rotates** the refresh token on every renewal: anything that renews without saving the result leaves a dead grant on disk and forces a real login. So the widget renews and saves, 30 minutes before expiry: `File.Replace` swaps the file in whole, so a concurrent reader never sees half a file, and the previous copy stays as `.credentials.json.bak`. Only `accessToken`, `refreshToken` and `expiresAt` change; MCP server entries are written back untouched.
 
 ---
 

@@ -24,7 +24,11 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    # Renew the access token even when the stored one still looks valid. Only
+    # useful for exercising the refresh path by hand.
+    [switch]$ForceRefresh
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -34,6 +38,16 @@ $outputDir  = Join-Path $env:APPDATA 'ClaudeUsage'
 $outputPath = Join-Path $outputDir 'usage.json'
 $apiUrl      = 'https://api.anthropic.com/api/oauth/usage'
 $codexApiUrl = 'https://chatgpt.com/backend-api/wham/usage'
+$tokenUrl    = 'https://platform.claude.com/v1/oauth/token'
+
+# Claude Code's own public OAuth client id - the same one the CLI puts in its
+# authorize URL. The refresh grant is rejected without it.
+$oauthClientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'  # gitleaks:allow - public PKCE client id, printed in the CLI authorize URL
+
+# The token endpoint answers 429 with an empty body to PowerShell's default
+# user agent, whatever the grant is worth - a junk token gets the same 429,
+# and any explicit agent gets a real answer. So send one.
+$userAgent = 'ai-usage-rainmeter/1.0 (windows; powershell)'
 
 if (-not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -132,6 +146,112 @@ function Get-ClaudePlan {
     if ($tier -match '(?i)max_(\d+)x') { return "Max $($Matches[1])x" }
     if (-not $sub) { return '' }
     return $sub.Substring(0,1).ToUpper() + $sub.Substring(1)
+}
+
+# --- Token upkeep ----------------------------------------------------------
+# The credentials file is only rewritten when the standalone CLI runs: the
+# desktop app refreshes inside its own session, so the 8-hour access token on
+# disk goes stale while the account is perfectly logged in. Asking the user to
+# re-authenticate over that is wrong - the refresh token sitting right next to
+# it is good for 28 days - so spend it the way Claude Code and the Stream Deck
+# plugin do, and write the result back so every other reader of the file gets
+# the fresh token too.
+
+function Read-ClaudeCredentials {
+    $raw   = Get-Content -Path $script:credentialsPath -Raw | ConvertFrom-Json
+    $oauth = if ($raw.claudeAiOauth) { $raw.claudeAiOauth } else { $raw }
+    return [PSCustomObject]@{ Raw = $raw; Oauth = $oauth }
+}
+
+# Half an hour of slack. The point is not just to avoid starting a call on a
+# token that expires mid-flight: the token endpoint answers bursts with a 429,
+# so the renewal needs a wide window of cycles to land one success in while the
+# token on disk is still good.
+function Test-ClaudeTokenExpired {
+    param($Oauth, [int]$SkewMinutes = 30)
+    if (-not $Oauth.expiresAt) { return $false }
+    $epoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    return ($epoch.AddMilliseconds([long]$Oauth.expiresAt) -lt [DateTime]::UtcNow.AddMinutes($SkewMinutes))
+}
+
+function New-ClaudeHeaders {
+    param([string]$AccessToken)
+    return @{
+        'Authorization'  = "Bearer $AccessToken"
+        'anthropic-beta' = 'oauth-2025-04-20'
+    }
+}
+
+function Test-Unauthorized {
+    param($ErrorRecord)
+    if (-not $ErrorRecord.Exception.Response) { return $false }
+    return ([int]$ErrorRecord.Exception.Response.StatusCode -eq 401)
+}
+
+# Returns the fresh access token. The file is swapped in with File.Replace so a
+# concurrent reader never sees a half-written file, and the previous copy stays
+# as .bak. The server may hand back a new refresh token; persisting that is the
+# whole point, since the old one dies the moment it is rotated.
+function Update-ClaudeCredentials {
+    param($Raw, $Oauth)
+
+    if (-not $Oauth.refreshToken) { throw 'No refresh token in the credentials file.' }
+
+    $body = @{
+        grant_type    = 'refresh_token'
+        refresh_token = [string]$Oauth.refreshToken
+        client_id     = $script:oauthClientId
+    } | ConvertTo-Json -Compress
+
+    try {
+            $resp = Invoke-RestMethod -Uri $script:tokenUrl -Method Post -ContentType 'application/json' `
+            -Body $body -UserAgent $script:userAgent -TimeoutSec 20
+    } catch {
+        # 5.1 hides the response body inside the exception, and that body is
+        # the only thing that says whether the grant was rejected or the call
+        # never landed. Pull it out so the banner is diagnosable.
+        $detail = ''
+        if ($_.Exception.Response) {
+            $detail = "HTTP $([int]$_.Exception.Response.StatusCode) "
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $detail += (ConvertTo-SafeMessage $reader.ReadToEnd())
+                $reader.Close()
+            } catch { }
+        }
+        if (-not $detail) { $detail = $_.Exception.Message }
+        throw "Refresh call failed: $detail"
+    }
+    if (-not $resp.access_token) { throw 'The refresh response carried no access token.' }
+
+    $Oauth | Add-Member -NotePropertyName accessToken -NotePropertyValue ([string]$resp.access_token) -Force
+    if ($resp.refresh_token) {
+        $Oauth | Add-Member -NotePropertyName refreshToken -NotePropertyValue ([string]$resp.refresh_token) -Force
+    }
+    if ($resp.expires_in) {
+        $expiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 1000 * [long]$resp.expires_in)
+        $Oauth | Add-Member -NotePropertyName expiresAt -NotePropertyValue $expiresAt -Force
+    }
+    # The 28-day window is anchored to the login, not rolling: this comes back
+    # still pointing at login + 28 days. Writing it keeps the field describing
+    # the token actually on disk, for whoever reads it next.
+    if ($resp.refresh_token_expires_in) {
+        $rtExpiresAt = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 1000 * [long]$resp.refresh_token_expires_in)
+        $Oauth | Add-Member -NotePropertyName refreshTokenExpiresAt -NotePropertyValue $rtExpiresAt -Force
+    }
+
+    # 5.1's ConvertTo-Json stops at depth 2, which would flatten the mcpOAuth
+    # entries of every other server into strings. Keep the whole file intact.
+    $json = $Raw | ConvertTo-Json -Depth 20
+    $tmp  = "$script:credentialsPath.tmp"
+    $bak  = "$script:credentialsPath.bak"
+
+    # Node reads this file: a BOM would break JSON.parse.
+    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+    if (Test-Path $bak) { Remove-Item -Path $bak -Force }
+    [System.IO.File]::Replace($tmp, $script:credentialsPath, $bak)
+
+    return [string]$Oauth.accessToken
 }
 
 function New-CodexBlock {
@@ -279,28 +399,54 @@ try {
         exit 1
     }
 
-    $credentialsRaw = Get-Content -Path $credentialsPath -Raw | ConvertFrom-Json
-    $credentials = if ($credentialsRaw.claudeAiOauth) { $credentialsRaw.claudeAiOauth } else { $credentialsRaw }
-    $claudePlan = Get-ClaudePlan -Credentials $credentials
+    $stored      = Read-ClaudeCredentials
+    $credentials = $stored.Oauth
+    $claudePlan  = Get-ClaudePlan -Credentials $credentials
 
     if (-not $credentials.accessToken) {
         Write-ErrorState -ErrorMessage "No access token found in credentials file" -Codex $codexBlock -Plan $claudePlan
         exit 1
     }
 
-    if ($credentials.expiresAt) {
-        $epoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
-        if ($epoch.AddMilliseconds([long]$credentials.expiresAt) -lt [DateTime]::UtcNow) {
-            Write-ErrorState -ErrorMessage "OAuth token has expired. Please re-authenticate with Claude Code." -Codex $codexBlock -Plan $claudePlan
-            exit 1
+    $accessToken = [string]$credentials.accessToken
+
+    if ($ForceRefresh -or (Test-ClaudeTokenExpired -Oauth $credentials)) {
+        try {
+            $accessToken = Update-ClaudeCredentials -Raw $stored.Raw -Oauth $credentials
+            Write-Verbose 'Access token refreshed and written back to the credentials file.'
+        } catch {
+            # The CLI may have refreshed - and rotated - the grant between our
+            # read and this call, so look again before declaring it dead.
+            $refreshError = $_.Exception.Message
+            $again = Read-ClaudeCredentials
+            if ($again.Oauth.accessToken -and -not (Test-ClaudeTokenExpired -Oauth $again.Oauth)) {
+                Write-Warning "Token refresh failed, using the token still on disk. $refreshError"
+                $accessToken = [string]$again.Oauth.accessToken
+            } else {
+                if ($refreshError -match '429') {
+                    # Throttled, not logged out. The widget runs again in a
+                    # minute or two, so never send the user to a login prompt
+                    # over this one.
+                    $hint = "Token refresh throttled by the server. Retrying on the next cycle."
+                } else {
+                    $hint = "Token refresh failed ($refreshError) Log in again with: claude.cmd auth login"
+                }
+                Write-ErrorState -ErrorMessage $hint -Codex $codexBlock -Plan $claudePlan
+                exit 1
+            }
         }
     }
 
-    $headers = @{
-        'Authorization'  = "Bearer $($credentials.accessToken)"
-        'anthropic-beta' = 'oauth-2025-04-20'
+    try {
+        $response = Invoke-RestMethod -Uri $apiUrl -Headers (New-ClaudeHeaders $accessToken) -Method Get
+    } catch {
+        if (-not (Test-Unauthorized $_)) { throw }
+        # A 401 on a token that still looked valid means it was revoked or
+        # rotated elsewhere. Refresh once and retry before giving up.
+        $again       = Read-ClaudeCredentials
+        $accessToken = Update-ClaudeCredentials -Raw $again.Raw -Oauth $again.Oauth
+        $response    = Invoke-RestMethod -Uri $apiUrl -Headers (New-ClaudeHeaders $accessToken) -Method Get
     }
-    $response = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Get
 
     # --- Session + weekly rows: prefer the limits array, fall back to legacy buckets ---
     $limits = @($response.limits)
