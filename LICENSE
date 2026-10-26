@@ -1,7 +1,39 @@
-MIT License
+LICENCE STATUS — read this before reusing anything here.
 
-Copyright (c) 2026 JayDeeAU (Joe Demian @ Codemian) — original "Claude Usage Monitor"
-Copyright (c) 2026 Contributors to this fork — Codex/ChatGPT support and subsequent changes
+This project is a fork of "Claude Usage Monitor" by JayDeeAU
+(Joe Demian @ Codemian), published at:
+
+  https://www.deviantart.com/jaydeeau/art/Claude-Usage-Monitor-Rainmeter-Widget-1290968321
+
+That page grants no licence. Its description ends "© 2026 JayDeeAU" and names
+no terms of use, so the original is all rights reserved. Permission to copy,
+modify or redistribute it has not been given.
+
+An earlier version of this file applied the MIT Licence to the whole project,
+including the original author's copyright. That was wrong: it asserted a grant
+the author never made. It is withdrawn, and this file replaces it.
+
+What that means:
+
+  * Everything here that derives from the original work remains
+    © 2026 JayDeeAU, all rights reserved.
+
+  * The changes made in this fork — Codex/ChatGPT support, the API-driven
+    scoped-model row in place of the retired Sonnet bucket, the plan tier
+    badges, the on-skin error reporting, the Scale variable and the packaging
+    fix — are © 2026 Gabriel Rossetto, and are offered under the MIT terms
+    below, to whatever extent they can be separated from the original.
+
+  * The project as a whole is NOT under a licence you can rely on. Do not
+    treat it as open source, and do not redistribute it, unless and until the
+    original author says otherwise.
+
+------------------------------------------------------------------------------
+
+MIT terms — these apply ONLY to this fork's own changes, and not to the
+original work those changes are built on.
+
+Copyright (c) 2026 Gabriel Rossetto
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -13,5 +13,6 @@ thresholds and the master `Scale` live in `@Resources\Variables.inc`.
 **Troubleshooting, data sources and privacy notes:** see the full README in the
 project repository.
 
-Original *Claude Usage Monitor* by **JayDeeAU** (Joe Demian @ Codemian).
-MIT licensed.
+Original *Claude Usage Monitor* by **JayDeeAU** (Joe Demian @ Codemian), which
+grants no licence and is all rights reserved. Only this fork's own changes are
+offered under MIT. Not open source — see LICENSE in the project repository.

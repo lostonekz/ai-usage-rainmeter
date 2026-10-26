@@ -172,4 +172,9 @@ Original **Claude Usage Monitor** by **JayDeeAU** (Joe Demian @ Codemian) — [D
 
 This fork adds Codex/ChatGPT support, replaces the retired per-model Sonnet bucket with the API-driven scoped-model row, adds plan tier badges, on-skin error reporting and a `Scale` variable, and fixes the packaging so the `.rmskin` installs.
 
-MIT licensed — see [LICENSE](LICENSE).
+**This is not open source.** The original grants no licence — its page ends
+"© 2026 JayDeeAU" and names no terms of use — so it is all rights reserved, and
+a fork cannot license it on the author's behalf. This repository claimed "MIT
+licensed" until 2026-10-26; that claim was wrong and has been withdrawn. Only
+this fork's own changes are offered under MIT. See [LICENSE](LICENSE) for what
+that does and does not cover.
