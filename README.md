@@ -15,7 +15,6 @@ A Rainmeter widget showing **Claude** and **Codex / ChatGPT** usage limits side 
 | 5-Hour Session | `limits[]` where `kind = session` |
 | 7-Day All Models | `limits[]` where `kind = weekly_all` |
 | 7-Day *&lt;model&gt;* | `limits[]` where `kind = weekly_scoped` — the model name and its share of the weekly allowance both come from the API, so the row follows whatever model your plan currently meters |
-| Week: … | `seven_day_breakdown` — where the weekly allowance actually went (Claude Code / Chats / Cowork / Other) |
 
 **Codex / ChatGPT** (plan type from the API)
 

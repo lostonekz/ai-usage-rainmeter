@@ -56,7 +56,7 @@ SectionColor=150,150,165,255
 
 ; Widget size
 WidgetWidth=(280*#Scale#)
-WidgetHeight=(500*#Scale#)
+WidgetHeight=(397*#Scale#)
 WidgetPadding=(15*#Scale#)
 CornerRadius=(8*#Scale#)
 
@@ -67,12 +67,12 @@ BarWidth=(250*#Scale#)
 ; Vertical rhythm
 HeaderY=(12*#Scale#)
 SectionY=(42*#Scale#)
-RowGap=(12*#Scale#)
-BarGap=(4*#Scale#)
-TextGap=(3*#Scale#)
-FooterGap=(8*#Scale#)
+RowGap=(8*#Scale#)
+BarGap=(3*#Scale#)
+TextGap=(2*#Scale#)
+FooterGap=(6*#Scale#)
 SectionGap=(10*#Scale#)
-AfterSectionGap=(6*#Scale#)
+AfterSectionGap=(4*#Scale#)
 GearOffset=(70*#Scale#)
 
 ; Horizontal gaps between inline text runs
