@@ -9,10 +9,12 @@
     meters, instead of the retired seven_day_sonnet bucket. Falls back to the legacy
     top-level objects if "limits" is missing.
 
-    Codex: reads the ChatGPT OAuth token from Codex's auth.json and calls the usage
-    endpoint for the 5-hour and 7-day windows. This endpoint is undocumented and may
-    change without notice; if it does, the Codex rows degrade to "n/a" and the Claude
-    rows keep working.
+    Codex: reads the 5-hour and 7-day windows out of Codex's own session logs. The
+    CLI is metered against a limit bucket of its own ("codex"), which no usage
+    endpoint reachable from here reports; what the CLI displays comes from a snapshot
+    the server attaches to every turn, and Codex records that snapshot in its session
+    log, so that is where it is read from. The numbers are therefore as fresh as the
+    last Codex turn, and the plan badge carries their age.
 
     Neither provider is allowed to break the other - each is fetched in its own
     try/catch and renders independently.
@@ -32,12 +34,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$credentialsPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$codexAuthPath   = Join-Path $env:USERPROFILE '.codex\auth.json'
+$credentialsPath  = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+$codexAuthPath    = Join-Path $env:USERPROFILE '.codex\auth.json'
+$codexSessionsDir = Join-Path $env:USERPROFILE '.codex\sessions'
 $outputDir  = Join-Path $env:APPDATA 'ClaudeUsage'
 $outputPath = Join-Path $outputDir 'usage.json'
 $apiUrl      = 'https://api.anthropic.com/api/oauth/usage'
-$codexApiUrl = 'https://chatgpt.com/backend-api/wham/usage'
 $tokenUrl    = 'https://platform.claude.com/v1/oauth/token'
 
 # Claude Code's own public OAuth client id - the same one the CLI puts in its
@@ -102,6 +104,18 @@ function Format-Countdown {
     if ($days -gt 0) { return "{0}d {1}h" -f $days, $diff.Hours }
     if ($diff.Hours -gt 0) { return "{0}h {1}m" -f $diff.Hours, $diff.Minutes }
     return "{0}m" -f $diff.Minutes
+}
+
+# How long ago a reading was taken. Used for the Codex numbers, which are a
+# snapshot of the last turn rather than a live figure.
+function Format-Age {
+    param([DateTime]$Utc)
+    $diff = [DateTime]::UtcNow - $Utc
+    if ($diff.TotalSeconds -lt 0) { return 'just now' }
+    if ($diff.TotalDays -ge 1) { return "{0}d {1}h ago" -f [int]$diff.TotalDays, $diff.Hours }
+    if ($diff.TotalHours -ge 1) { return "{0}h {1}m ago" -f [int]$diff.TotalHours, $diff.Minutes }
+    if ($diff.TotalMinutes -ge 1) { return "{0}m ago" -f [int]$diff.TotalMinutes }
+    return 'just now'
 }
 
 # Builds one widget row from a percent + a reset time already normalised to UTC.
@@ -275,70 +289,122 @@ function ConvertTo-SafeMessage {
 }
 
 # --- Codex / ChatGPT -------------------------------------------------------
+# The ChatGPT usage endpoint was the obvious source and it is the wrong one.
+# It reports the generic account bucket, which CLI traffic never touches, so it
+# answers a flat 0% however much Codex has been used - which is why these rows
+# sat empty. The figures the CLI shows come from a "codex" bucket the server
+# attaches to each turn's response, and Codex writes that snapshot into its
+# session log. So the newest log is the source here. The cost is that the
+# numbers are only as fresh as the last Codex turn; the plan badge says how old
+# they are, and a window that has since rolled over reads as empty.
+#
+# Sessions run to tens of megabytes, so only the tail of each is read. A
+# snapshot rides along with every turn, so the last couple of megabytes hold
+# one for any session that got as far as a single response.
+function Read-CodexSnapshot {
+    param($File, [int]$TailBytes = 2097152)
+
+    $text = $null
+    try {
+        # Codex may hold the live session open, so share the write handle.
+        $stream = [System.IO.File]::Open($File.FullName, 'Open', 'Read', 'ReadWrite')
+        try {
+            $seeked = $stream.Length -gt $TailBytes
+            if ($seeked) { $stream.Position = $stream.Length - $TailBytes }
+            $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::UTF8)
+            $text = $reader.ReadToEnd()
+        } finally { $stream.Dispose() }
+    } catch {
+        return $null
+    }
+
+    # One JSON event per line. Seeking into the middle of the file lands
+    # mid-line, so that first fragment is skipped rather than parsed.
+    $lines = $text -split "`n"
+    $floor = if ($seeked) { 1 } else { 0 }
+
+    for ($i = $lines.Count - 1; $i -ge $floor; $i--) {
+        if ($lines[$i] -notmatch '"rate_limits"') { continue }
+        try { $ev = $lines[$i] | ConvertFrom-Json } catch { continue }
+
+        $limits = $ev.payload.rate_limits
+        if (-not $limits) { continue }
+        # Other buckets may show up here; only the CLI's own one is wanted.
+        if ($limits.limit_id -and $limits.limit_id -ne 'codex') { continue }
+
+        $asOf = ConvertTo-UtcTime $ev.timestamp
+        if (-not $asOf) { continue }
+        return [PSCustomObject]@{ Limits = $limits; AsOf = $asOf }
+    }
+    return $null
+}
+
+# Newest session first, since a session can be abandoned before its first turn
+# and so carry no snapshot at all.
+function Get-CodexSnapshot {
+    $files = Get-ChildItem -Path $script:codexSessionsDir -Filter 'rollout-*.jsonl' -Recurse -File -ErrorAction SilentlyContinue |
+             Where-Object { $_.Name -like '*.jsonl' } |
+             Sort-Object LastWriteTime -Descending |
+             Select-Object -First 5
+
+    foreach ($file in $files) {
+        $snap = Read-CodexSnapshot -File $file
+        if ($snap) { return $snap }
+    }
+    return $null
+}
+
+# A window whose reset has already passed rolled over without a newer snapshot
+# being written, which means no Codex turn has been spent in the current one.
+# So it reads as empty - and its reset is left blank, because an untouched
+# sliding window has no boundary to count down to yet.
+function New-CodexRow {
+    param($Window)
+    if (-not $Window) { return New-Row -Percent 0 -ResetUtc $null }
+
+    $resetUtc = ConvertFrom-UnixSeconds $Window.resets_at
+    if ($resetUtc -and $resetUtc -lt [DateTime]::UtcNow) {
+        return New-Row -Percent 0 -ResetUtc $null
+    }
+    return New-Row -Percent $Window.used_percent -ResetUtc $resetUtc
+}
+
 # Isolated from the Claude fetch: any failure here returns an "error" block and
 # the Claude rows still render.
 function Get-CodexUsage {
     try {
-        if (-not (Test-Path $codexAuthPath)) {
-            return New-CodexBlock -Plan 'no auth' -Detail 'Codex auth.json not found - sign in with Codex once'
-        }
-
-        $auth = Get-Content -Path $codexAuthPath -Raw | ConvertFrom-Json
-        $token = $auth.tokens.access_token
-        if (-not $token) { return New-CodexBlock -Plan 'no token' -Detail 'No access token in Codex auth.json' }
-
-        # The token is refreshed by Codex itself; we only read it. If it has
-        # lapsed, say so rather than firing a request that will 401.
-        try {
-            $seg = $token.Split('.')[1].Replace('-', '+').Replace('_', '/')
-            while ($seg.Length % 4) { $seg += '=' }
-            $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($seg)) | ConvertFrom-Json
-            $exp = ConvertFrom-UnixSeconds $claims.exp
-            if ($exp -and $exp -lt [DateTime]::UtcNow) {
-                return New-CodexBlock -Plan 'expired' -Detail 'Codex token expired - run Codex once to refresh it'
+        if (-not (Test-Path $codexSessionsDir)) {
+            $detail = if (Test-Path $codexAuthPath) {
+                'No Codex session history yet - run Codex once'
+            } else {
+                'Codex not set up here - sign in with Codex once'
             }
-        } catch {
-            # Unreadable JWT is not fatal - let the request decide.
+            return New-CodexBlock -Plan 'no data' -Detail $detail
         }
 
-        $headers = @{
-            'Authorization'      = "Bearer $token"
-            'chatgpt-account-id' = $auth.tokens.account_id
-            'originator'         = 'codex_cli_rs'
-            'User-Agent'         = 'codex_cli_rs/0.0.0'
+        $snap = Get-CodexSnapshot
+        if (-not $snap) {
+            return New-CodexBlock -Plan 'no data' -Detail 'No usage snapshot in the recent Codex sessions - run Codex once'
         }
-        $r = Invoke-RestMethod -Uri $codexApiUrl -Headers $headers -Method Get -TimeoutSec 20
 
-        $plan = if ($r.plan_type) {
-            $t = [string]$r.plan_type
+        $limits = $snap.Limits
+        $plan = if ($limits.plan_type) {
+            $t = [string]$limits.plan_type
             $t.Substring(0,1).ToUpper() + $t.Substring(1)
         } else { 'n/a' }
 
-        $primary   = $r.rate_limit.primary_window
-        $secondary = $r.rate_limit.secondary_window
+        # These are a reading, not a live figure, so the badge carries its age
+        # once it is old enough to matter.
+        $age = Format-Age $snap.AsOf
+        if ($age -ne 'just now') { $plan = "$plan ($age)" }
 
-        $fiveHour = New-Row -Percent $primary.used_percent   -ResetUtc (ConvertFrom-UnixSeconds $primary.reset_at)
-        $sevenDay = New-Row -Percent $secondary.used_percent -ResetUtc (ConvertFrom-UnixSeconds $secondary.reset_at)
+        $fiveHour = New-CodexRow -Window $limits.primary
+        $sevenDay = New-CodexRow -Window $limits.secondary
 
         return New-CodexBlock -Status 'ok' -Plan $plan -FiveHour $fiveHour -SevenDay $sevenDay
 
     } catch {
-        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
-        $label = switch ($code) {
-            401 { 'auth failed' }
-            403 { 'forbidden' }
-            429 { 'rate limited' }
-            0   { 'unreachable' }
-            default { "HTTP $code" }
-        }
-        $detail = switch ($code) {
-            401 { 'Codex token rejected - run Codex once to refresh it' }
-            403 { 'Codex usage endpoint refused the request (it is undocumented and may have moved)' }
-            429 { 'Codex API rate limited - it will retry on the next refresh' }
-            0   { 'Could not reach the Codex API' }
-            default { "Codex API returned HTTP $code" }
-        }
-        return New-CodexBlock -Plan $label -Detail $detail
+        return New-CodexBlock -Plan 'error' -Detail ("Could not read Codex usage: " + (ConvertTo-SafeMessage $_.Exception.Message))
     }
 }
 

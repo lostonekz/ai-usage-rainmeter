@@ -16,12 +16,24 @@ A Rainmeter widget showing **Claude** and **Codex / ChatGPT** usage limits side 
 | 7-Day All Models | `limits[]` where `kind = weekly_all` |
 | 7-Day *&lt;model&gt;* | `limits[]` where `kind = weekly_scoped` — the model name and its share of the weekly allowance both come from the API, so the row follows whatever model your plan currently meters |
 
-**Codex / ChatGPT** (plan type from the API)
+**Codex / ChatGPT** (plan type from the snapshot)
 
 | Row | Source |
 | --- | --- |
-| 5-Hour Session | `rate_limit.primary_window` |
-| 7-Day Total | `rate_limit.secondary_window` |
+| 5-Hour Session | `rate_limits.primary` of the newest session snapshot |
+| 7-Day Total | `rate_limits.secondary` of the newest session snapshot |
+
+Codex meters the CLI against a bucket of its own, which no usage endpoint
+reachable from here reports — the account endpoint answers a flat 0% however
+much Codex has been used. The figures the CLI shows itself come from a snapshot
+the server attaches to every turn, and Codex records it in its session log, so
+that is what these rows read. Two consequences worth knowing:
+
+- They are as fresh as your **last Codex turn**, not as fresh as the widget.
+  The plan badge carries their age — `Plus (16h ago)`.
+- A window that has rolled over since that turn reads **0% with no countdown**:
+  nothing has been spent in the current one, and an untouched sliding window
+  has no reset to count down to yet.
 
 Bars turn amber past 75% and red past 90%.
 
@@ -34,7 +46,7 @@ Bars turn amber past 75% and red past 90%.
 - Windows PowerShell 5.1 (ships with Windows) **or** PowerShell 7 — the script runs on both
 - At least one of:
   - **Claude Code**, logged in — provides `~/.claude/.credentials.json`
-  - **Codex**, logged in with a ChatGPT account — provides `~/.codex/auth.json`
+  - **Codex**, logged in with a ChatGPT account and run at least once — provides `~/.codex/sessions`
 
 If only one is present, that provider's rows populate and the other shows why it is unavailable. Neither is required for the other to work.
 
@@ -87,14 +99,15 @@ The widget tells you rather than silently showing zeroes:
 
 - The **status dot** in the footer is green when both providers answered, amber when one is down, red when neither is.
 - A **red line under the footer** names what failed, e.g. `Claude: Rate limited. Please wait before retrying.` Long messages are clipped — hover the line for the full text.
-- The **Codex plan badge** is replaced by the failure reason: `expired`, `auth failed`, `forbidden`, `unreachable`, `no auth`.
+- The **Codex plan badge** is replaced by `no data` when no snapshot could be read, and carries the reading's age otherwise.
 
 Common cases:
 
 | Shown | Meaning |
 | --- | --- |
-| `Codex: expired` | The ChatGPT token in `auth.json` has lapsed. Run Codex once; it refreshes the token itself. |
-| `Codex: forbidden` | The usage endpoint refused the request. It is undocumented — it may have moved. |
+| `Codex: Codex not set up here` | No `~/.codex` found. Sign in with Codex once. |
+| `Codex: No Codex session history yet` | Codex is signed in but has never run. Run it once; the first turn writes a snapshot. |
+| `Codex: No usage snapshot in the recent Codex sessions` | The recent sessions were abandoned before their first turn, or their logs have been archived. Run Codex once. |
 | `Claude: Rate limited` | Too many calls to the usage API. It clears on its own; raise `RefreshInterval` if it recurs. |
 | `Claude: Token refresh throttled` | The token endpoint turned the renewal away. The next cycle retries; nothing to do. |
 | `Claude: Token refresh failed` | The refresh token itself is dead (28 days unused, or spent elsewhere). Sign in again: `claude auth login` - `claude.cmd auth login` on a PowerShell that blocks the `.ps1` shim. |
@@ -107,19 +120,19 @@ Common cases:
 ```
 Claude Code OAuth token ─┐
                          ├─→ Get-ClaudeUsage.ps1 ─→ %APPDATA%\ClaudeUsage\usage.json ─→ Rainmeter
-Codex OAuth token ───────┘
+Codex session log ───────┘
 ```
 
-A single PowerShell script reads both local token files, calls each provider's usage endpoint, and writes one small JSON file. Rainmeter parses that file — it never talks to either API directly.
+A single PowerShell script calls the Claude usage API with the token from Claude Code's credentials file, reads the Codex figures out of Codex's own session log, and writes one small JSON file. Rainmeter parses that file — it never talks to any API directly.
 
 Each provider is fetched inside its own `try`/`catch` and parsed by its own regex, so a failure on one side cannot blank the other.
 
 ### Endpoints
 
-| Provider | Endpoint | Status |
+| Provider | Source | Status |
 | --- | --- | --- |
 | Claude | `https://api.anthropic.com/api/oauth/usage` | Used by Claude Code itself |
-| Codex | `https://chatgpt.com/backend-api/wham/usage` | **Undocumented.** May change without notice; the widget degrades to an error badge if it does. |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` | Local file, no network call. **Undocumented shape** — if Codex changes its log format the plan badge shows `no data` and the Claude rows keep working. |
 
 ### A note on the Claude tier badge
 
@@ -160,7 +173,7 @@ regex and a third section — whenever Google ships something supported.
 - Tokens are read from your own local files and sent only to the provider they belong to — Anthropic's token to Anthropic, the ChatGPT token to OpenAI. Nowhere else.
 - `usage.json` holds only percentages, reset timestamps, plan tier and status text. No tokens, account IDs or email addresses are written to it.
 - Nothing is sent anywhere else, and the widget only reads usage data — it cannot change either account.
-- The Codex token file is only ever read. The Claude one is rewritten, but only to renew it: see below.
+- The Codex session logs are only ever read, and only their rate-limit snapshot. The Claude credentials file is rewritten, but only to renew the token: see below.
 - Renewing the Claude token is the one write this widget makes, and it exists because not writing it was worse. The access token lasts 8 hours and only the standalone CLI rewrites the file - the desktop app renews inside its own session - so the file goes stale while the account is perfectly logged in, and the widget used to answer that with "sign in again". Worse, the server **rotates** the refresh token on every renewal: anything that renews without saving the result leaves a dead grant on disk and forces a real login. So the widget renews and saves, 30 minutes before expiry: `File.Replace` swaps the file in whole, so a concurrent reader never sees half a file, and the previous copy stays as `.credentials.json.bak`. Only `accessToken`, `refreshToken` and `expiresAt` change; MCP server entries are written back untouched.
 
 ---

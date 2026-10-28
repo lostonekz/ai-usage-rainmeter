@@ -2,10 +2,12 @@
 
 Rainmeter widget showing Claude and Codex/ChatGPT usage limits side by side.
 
-Reads OAuth tokens from your local Claude Code (`~/.claude/.credentials.json`)
-and Codex (`~/.codex/auth.json`) installs, queries each provider's usage
-endpoint, and renders the result. Either provider works on its own; if one is
-unavailable the widget says so instead of showing zeroes.
+Reads the Claude figures from the usage API, using the OAuth token in your
+local Claude Code install (`~/.claude/.credentials.json`), and the Codex ones
+from Codex's own session log (`~/.codex/sessions`). Either provider works on
+its own; if one is unavailable the widget says so instead of showing zeroes.
+The Codex numbers are a snapshot of your last Codex turn, and the plan badge
+carries their age.
 
 **Settings** — right-click for refresh interval and size presets. Colours,
 thresholds and the master `Scale` live in `@Resources\Variables.inc`.
