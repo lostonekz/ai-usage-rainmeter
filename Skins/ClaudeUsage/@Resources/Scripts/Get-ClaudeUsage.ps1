@@ -119,15 +119,22 @@ function Format-Age {
 }
 
 # Builds one widget row from a percent + a reset time already normalised to UTC.
+#
+# resetDate must never come out empty. The skin stacks each row below the one
+# before it with Y=...R, which measures from the previous meter's bottom edge,
+# and the date is the last meter in a reset line - so a String meter with no
+# text collapses to zero height and the next row is drawn on top of this one.
+# NoResetDate is what stands in when there is no reset time to show.
 function New-Row {
-    param($Percent, $ResetUtc, [string]$Label = '', $Share = $null, [bool]$Available = $true)
+    param($Percent, $ResetUtc, [string]$Label = '', $Share = $null, [bool]$Available = $true,
+          [string]$NoResetDate = '--')
 
     $row = [PSCustomObject]@{
         label          = $Label
         percent        = 0
         share          = ''
         resetCountdown = '--'
-        resetDate      = ''
+        resetDate      = $NoResetDate
         resetAt        = $null
         available      = $Available
     }
@@ -356,15 +363,16 @@ function Get-CodexSnapshot {
 
 # A window whose reset has already passed rolled over without a newer snapshot
 # being written, which means no Codex turn has been spent in the current one.
-# So it reads as empty - and its reset is left blank, because an untouched
-# sliding window has no boundary to count down to yet.
+# So it reads as 0% with no countdown, because an untouched sliding window has
+# no boundary to count down to yet - and says so in place of the reset stamp,
+# which also keeps the line its full height. See New-Row.
 function New-CodexRow {
     param($Window)
     if (-not $Window) { return New-Row -Percent 0 -ResetUtc $null }
 
     $resetUtc = ConvertFrom-UnixSeconds $Window.resets_at
     if ($resetUtc -and $resetUtc -lt [DateTime]::UtcNow) {
-        return New-Row -Percent 0 -ResetUtc $null
+        return New-Row -Percent 0 -ResetUtc $null -NoResetDate '(window empty)'
     }
     return New-Row -Percent $Window.used_percent -ResetUtc $resetUtc
 }
