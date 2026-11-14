@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks walks history, so it needs more than the default shallow clone.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  package:
+    name: Build package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version lives in two files. They drift silently otherwise: the
+      # package installs claiming one version while the skin reports another.
+      - name: Versions agree
+        shell: pwsh
+        run: |
+          $pkg  = (Select-String -Path 'RMSKIN.ini' -Pattern '^Version=(.+)$').Matches[0].Groups[1].Value.Trim()
+          $skin = (Select-String -Path 'Skins/ClaudeUsage/ClaudeUsage.ini' -Pattern '^Version=(.+)$').Matches[0].Groups[1].Value.Trim()
+          Write-Host "RMSKIN.ini=$pkg  ClaudeUsage.ini=$skin"
+          if ($pkg -ne $skin) {
+            Write-Host "::error::Version drift: RMSKIN.ini says $pkg, ClaudeUsage.ini says $skin"
+            exit 1
+          }
+
+      # Rainmeter may invoke the script under either shell, so both must parse it.
+      - name: Fetch script parses on PowerShell 7
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'Skins/ClaudeUsage/@Resources/Scripts/Get-ClaudeUsage.ps1'),
+            [ref]$null, [ref]$errs) | Out-Null
+          if ($errs.Count) {
+            $errs | ForEach-Object { Write-Host "::error::$($_.Message) (line $($_.Extent.StartLineNumber))" }
+            exit 1
+          }
+          Write-Host 'No parse errors.'
+
+      - name: Fetch script parses on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'Skins\ClaudeUsage\@Resources\Scripts\Get-ClaudeUsage.ps1'),
+            [ref]$null, [ref]$errs) | Out-Null
+          if ($errs.Count) {
+            $errs | ForEach-Object { Write-Host "::error::$($_.Message) (line $($_.Extent.StartLineNumber))" }
+            exit 1
+          }
+          Write-Host 'No parse errors.'
+
+      # A .rmskin is a ZIP plus a 16-byte trailer: int64 payload length, a flags
+      # byte, then "RMSKIN\0". Rainmeter rejects a package without it, so assert
+      # build.ps1 actually wrote one and that the length it declares is right.
+      - name: build.ps1 produces a valid .rmskin
+        shell: pwsh
+        run: |
+          ./build.ps1 -OutFile 'dist/ci-check.rmskin'
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path 'dist/ci-check.rmskin'))
+          if ($bytes.Length -le 16) { Write-Host '::error::Package is empty'; exit 1 }
+
+          $magic = [System.Text.Encoding]::ASCII.GetString($bytes[-7..-2])
+          if ($magic -ne 'RMSKIN') {
+            Write-Host "::error::Missing RMSKIN trailer (found '$magic')"
+            exit 1
+          }
+
+          $declared = [BitConverter]::ToInt64($bytes[-16..-9], 0)
+          $actual   = $bytes.Length - 16
+          if ($declared -ne $actual) {
+            Write-Host "::error::Trailer declares $declared bytes of payload, file carries $actual"
+            exit 1
+          }
+          Write-Host "Package OK: $($bytes.Length) bytes total, $declared of payload."
